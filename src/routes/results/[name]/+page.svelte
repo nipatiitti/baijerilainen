@@ -566,7 +566,7 @@
         </p>
 
         <div class="print-ecu-table print-table overflow-hidden rounded-xl bg-gray-800/35 ring-1 ring-white/10">
-          <div class="print-no-scroll relative max-h-[520px] overflow-auto">
+          <div class="print-no-scroll relative max-h-130 overflow-auto">
             <table
               class="print-table w-max min-w-full text-sm tabular-nums"
               style="border-collapse: separate; border-spacing: 0;"
