@@ -1,6 +1,7 @@
 node_modules
 
 data/
+/results/
 
 # Output
 .output
@@ -23,3 +24,15 @@ Thumbs.db
 # Vite
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pdb
+*.egg-info/
+.eggs/
+*.pytest_cache/
+.pytest_cache/
+

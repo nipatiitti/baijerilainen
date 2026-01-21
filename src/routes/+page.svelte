@@ -1,15 +1,13 @@
 <script lang="ts">
-  import { flip } from 'svelte/animate';
-  import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { deserialize } from '$app/forms';
-  import { DEFAULT_SELECTED_COLUMNS, type MotecFileMetadata, type ColumnInfo } from '$lib/csv-parser';
+  import { goto } from '$app/navigation';
+  import { DEFAULT_SELECTED_COLUMNS, type MotecFileMetadata } from '$lib/csv-parser';
   import type { ParseCSVResult } from './api/parse-csv/+server';
 
-  import Icon from '@iconify/svelte';
   import Button from '../components/Button.svelte';
   import FileUploadZone from '../components/FileUploadZone.svelte';
   import FileListItem from '../components/FileListItem.svelte';
-  import Checkbox from '../components/Checkbox.svelte';
+  import Icon from '@iconify/svelte';
 
   interface FileData {
     name: string;
@@ -19,7 +17,6 @@
   }
 
   let files = $state<FileData[]>([]);
-  let selectedColumns = new SvelteSet<string>(DEFAULT_SELECTED_COLUMNS);
   let isProcessing = $state(false);
   let isSaving = $state(false);
   let processingCount = $state(0);
@@ -27,42 +24,10 @@
   let dragOver = $state(false);
   let submitError = $state<string | null>(null);
   let submitSuccess = $state<string | null>(null);
-  let columnSearch = $state('');
 
-  // All available columns from all files (merged)
-  let availableColumns = $derived.by<ColumnInfo[]>(() => {
-    const columnMap = new SvelteMap<string, ColumnInfo>();
-    for (const file of files) {
-      if (!file.metadata) continue;
-      for (const col of file.metadata.columns) {
-        if (!columnMap.has(col.name)) {
-          columnMap.set(col.name, col);
-        }
-      }
-    }
-    return Array.from(columnMap.values());
-  });
-
-  // Filtered and sorted columns: selected first, then filtered by search
-  let filteredColumns = $derived.by(() => {
-    let cols = availableColumns;
-
-    // Filter by search
-    if (columnSearch.trim()) {
-      const search = columnSearch.toLowerCase();
-      cols = cols.filter((col) => col.name.toLowerCase().includes(search) || col.unit.toLowerCase().includes(search));
-    }
-
-    // Sort: selected columns first, then alphabetically within each group
-    return cols.toSorted((a, b) => {
-      const aSelected = selectedColumns.has(a.name);
-      const bSelected = selectedColumns.has(b.name);
-
-      if (aSelected && !bSelected) return -1;
-      if (!aSelected && bSelected) return 1;
-      return a.name.localeCompare(b.name);
-    });
-  });
+  // Compute total data points and valid files
+  let validFiles = $derived(files.filter((f) => !f.error && f.metadata !== null));
+  let totalDataPoints = $derived(validFiles.reduce((sum, f) => sum + (f.metadata?.rowCount ?? 0), 0));
 
   /**
    * Parse a single file via the API route (metadata only)
@@ -134,26 +99,6 @@
     files = files.filter((_, i) => i !== index);
   }
 
-  function toggleColumn(name: string) {
-    if (selectedColumns.has(name)) {
-      selectedColumns.delete(name);
-    } else {
-      selectedColumns.add(name);
-    }
-  }
-
-  function selectAll() {
-    for (const col of filteredColumns) {
-      selectedColumns.add(col.name);
-    }
-  }
-
-  function deselectAll() {
-    for (const col of filteredColumns) {
-      selectedColumns.delete(col.name);
-    }
-  }
-
   /**
    * Submit files with selected columns for server-side processing
    */
@@ -167,11 +112,10 @@
     try {
       const formData = new FormData();
 
-      // Add selected columns
-      formData.append('columns', JSON.stringify(Array.from(selectedColumns)));
+      // Add hardcoded columns
+      formData.append('columns', JSON.stringify(DEFAULT_SELECTED_COLUMNS));
 
       // Add all valid original files
-      const validFiles = files.filter((f) => !f.error && f.metadata !== null);
       for (const fileData of validFiles) {
         formData.append('files', fileData.file);
       }
@@ -186,8 +130,10 @@
       if (result.type === 'success' && result.data) {
         const data = result.data as { success: boolean; message?: string; error?: string };
         if (data.success) {
-          submitSuccess = data.message ?? 'Data saved successfully! Ready for optimization.';
+          submitSuccess = data.message ?? 'Data saved successfully! Starting optimization...';
           submitError = null;
+          // Navigate to the run page to start optimization
+          goto('/run');
         } else {
           submitError = data.error ?? 'Failed to save data';
           submitSuccess = null;
@@ -208,14 +154,23 @@
     }
   }
 
-  let canSubmit = $derived(files.some((f) => !f.error && f.metadata) && selectedColumns.size > 0);
+  let canSubmit = $derived(validFiles.length > 0);
 </script>
 
 <div class="min-h-screen bg-gray-900 p-8 text-white">
   <div class="mx-auto max-w-6xl">
-    <header class="mb-8">
-      <h1 class="text-3xl font-bold text-blue-400">ECU Optimization Data Uploader</h1>
-      <p class="mt-2 text-gray-400">Upload MoTeC CSV files from your dyno runs to begin the optimization process</p>
+    <header class="mb-8 flex items-start justify-between">
+      <div>
+        <h1 class="text-3xl font-bold text-blue-400">ECU Optimization Data Uploader</h1>
+        <p class="mt-2 text-gray-400">Upload MoTeC CSV files from your dyno runs to begin the optimization process</p>
+      </div>
+      <a
+        href="/results"
+        class="flex items-center gap-2 rounded-lg bg-gray-800 px-4 py-2 text-gray-300 transition-colors hover:bg-gray-700 hover:text-white"
+      >
+        <Icon icon="material-symbols:analytics-outline" width="20" height="20" />
+        View Results
+      </a>
     </header>
 
     <!-- File Upload Area -->
@@ -244,59 +199,6 @@
       </section>
     {/if}
 
-    <!-- Column Selection -->
-    {#if availableColumns.length > 0}
-      <section class="mb-8">
-        <h2 class="mb-4 text-xl font-semibold">Select Columns to Export</h2>
-        <p class="mb-4 text-gray-400">
-          Choose the data columns you want to include in the optimization. Key columns for BSFC optimization are
-          pre-selected.
-        </p>
-
-        <!-- Search and actions -->
-        <div class="mb-4 flex flex-wrap items-center gap-4">
-          <input
-            type="text"
-            placeholder="Search columns..."
-            bind:value={columnSearch}
-            class="min-w-50 flex-1 rounded-lg border border-gray-600 bg-gray-800 px-4 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none"
-          />
-          <div class="flex gap-2">
-            <Button variant="icon" type="button" onclick={selectAll} title="Select All">
-              <Icon icon="material-symbols:library-add-check-outline-rounded" width="24" height="24" />
-            </Button>
-            <Button variant="icon" type="button" onclick={deselectAll} title="Deselect All">
-              <Icon icon="material-symbols:check-box-outline-blank" width="24" height="24" />
-            </Button>
-          </div>
-        </div>
-
-        <!-- Column list -->
-        <div class="rounded-lg bg-gray-800 p-4">
-          <div class="grid max-h-96 grid-cols-1 gap-2 overflow-y-auto sm:grid-cols-2 lg:grid-cols-3">
-            {#each filteredColumns as col (col.name)}
-              <div animate:flip={{ duration: 200 }}>
-                <Checkbox checked={selectedColumns.has(col.name)} onchange={() => toggleColumn(col.name)}>
-                  <span class="truncate">{col.name}</span>
-                  {#if col.unit}
-                    <span class="ml-1 text-xs text-gray-500">({col.unit})</span>
-                  {/if}
-                </Checkbox>
-              </div>
-            {/each}
-          </div>
-
-          {#if filteredColumns.length === 0}
-            <p class="py-4 text-center text-gray-500">No columns match your search</p>
-          {/if}
-        </div>
-
-        <p class="mt-4 text-sm text-gray-500">
-          {selectedColumns.size} of {availableColumns.length} columns selected
-        </p>
-      </section>
-    {/if}
-
     <!-- Submit Section -->
     {#if canSubmit}
       <section class="border-t border-gray-700 pt-8">
@@ -312,14 +214,34 @@
           </div>
         {/if}
 
+        <!-- Data Summary -->
+        <div class="mb-6 rounded-lg bg-gray-800 p-4">
+          <h3 class="mb-3 font-semibold">Data Summary</h3>
+          <div class="grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
+            <div>
+              <p class="text-gray-400">Files</p>
+              <p class="text-lg font-medium">{validFiles.length}</p>
+            </div>
+            <div>
+              <p class="text-gray-400">Total Data Points</p>
+              <p class="text-lg font-medium">{totalDataPoints.toLocaleString()}</p>
+            </div>
+            <div>
+              <p class="text-gray-400">Columns to Export</p>
+              <p class="text-lg font-medium">{DEFAULT_SELECTED_COLUMNS.length}</p>
+            </div>
+            <div>
+              <p class="text-gray-400">Sample Rate</p>
+              <p class="text-lg font-medium">{validFiles[0]?.metadata?.metadata.sampleRate ?? 0} Hz</p>
+            </div>
+          </div>
+        </div>
+
         <form onsubmit={handleSubmit}>
           <div class="flex items-center justify-between">
             <div>
               <h3 class="font-semibold">Ready to Process</h3>
-              <p class="text-sm text-gray-400">
-                {files.filter((f) => !f.error).length} file(s) with
-                {selectedColumns.size} columns each
-              </p>
+              <p class="text-sm text-gray-400">Data will be filtered and prepared for optimization</p>
             </div>
             <Button variant="success" type="submit" disabled={isSaving}>
               {isSaving ? 'Saving...' : 'Save & Continue'}
