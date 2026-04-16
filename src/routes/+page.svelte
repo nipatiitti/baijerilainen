@@ -2,12 +2,14 @@
   import { deserialize } from '$app/forms';
   import { goto } from '$app/navigation';
   import { DEFAULT_SELECTED_COLUMNS, type MotecFileMetadata } from '$lib/csv-parser';
+  import type { FileInfo } from './api/files/+server';
   import type { ParseCSVResult } from './api/parse-csv/+server';
 
-  import Button from '../components/Button.svelte';
-  import FileUploadZone from '../components/FileUploadZone.svelte';
-  import FileListItem from '../components/FileListItem.svelte';
   import Icon from '@iconify/svelte';
+  import Button from '../components/Button.svelte';
+  import ExistingFileItem from '../components/ExistingFileItem.svelte';
+  import FileListItem from '../components/FileListItem.svelte';
+  import FileUploadZone from '../components/FileUploadZone.svelte';
 
   interface FileData {
     name: string;
@@ -17,6 +19,9 @@
   }
 
   let files = $state<FileData[]>([]);
+  let existingFiles = $state<FileInfo[]>([]);
+  let deletingFiles = $state<Set<string>>(new Set());
+  let isLoadingExisting = $state(true);
   let isProcessing = $state(false);
   let isSaving = $state(false);
   let processingCount = $state(0);
@@ -24,6 +29,57 @@
   let dragOver = $state(false);
   let submitError = $state<string | null>(null);
   let submitSuccess = $state<string | null>(null);
+
+  // Load existing files on mount
+  $effect(() => {
+    loadExistingFiles();
+  });
+
+  async function loadExistingFiles() {
+    isLoadingExisting = true;
+    try {
+      const response = await fetch('/api/files');
+      const data = await response.json();
+      existingFiles = data.files ?? [];
+    } catch (e) {
+      console.error('Failed to load existing files:', e);
+      existingFiles = [];
+    } finally {
+      isLoadingExisting = false;
+    }
+  }
+
+  async function deleteExistingFile(filename: string) {
+    deletingFiles = new Set([...deletingFiles, filename]);
+    try {
+      const response = await fetch('/api/files', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename })
+      });
+
+      if (response.ok) {
+        existingFiles = existingFiles.filter((f) => f.name !== filename);
+      } else {
+        const data = await response.json();
+        console.error('Failed to delete file:', data.error);
+      }
+    } catch (e) {
+      console.error('Failed to delete file:', e);
+    } finally {
+      deletingFiles = new Set([...deletingFiles].filter((f) => f !== filename));
+    }
+  }
+
+  async function deleteAllExistingFiles() {
+    if (!confirm('Are you sure you want to delete all uploaded files? This cannot be undone.')) {
+      return;
+    }
+
+    for (const file of existingFiles) {
+      await deleteExistingFile(file.name);
+    }
+  }
 
   // Compute total data points and valid files
   let validFiles = $derived(files.filter((f) => !f.error && f.metadata !== null));
@@ -132,6 +188,10 @@
         if (data.success) {
           submitSuccess = data.message ?? 'Data saved successfully! Starting optimization...';
           submitError = null;
+          // Reload existing files to show the newly saved ones
+          await loadExistingFiles();
+          // Clear the pending files list
+          files = [];
           // Navigate to the run page to start optimization
           goto('/run');
         } else {
@@ -155,6 +215,7 @@
   }
 
   let canSubmit = $derived(validFiles.length > 0);
+  let canRunOptimization = $derived(existingFiles.length > 0 && validFiles.length === 0);
 </script>
 
 <div class="min-h-screen bg-gray-900 p-8 text-white">
@@ -187,10 +248,51 @@
       </div>
     {/if}
 
-    <!-- Uploaded Files List -->
+    <!-- Existing Files (already on server) -->
+    <section class="mb-8">
+      <div class="mb-4 flex items-center justify-between">
+        <h2 class="text-xl font-semibold">
+          Existing Data Files
+          {#if existingFiles.length > 0}
+            <span class="ml-2 text-sm font-normal text-gray-400">({existingFiles.length} files)</span>
+          {/if}
+        </h2>
+        {#if existingFiles.length > 1}
+          <Button variant="ghost" onclick={deleteAllExistingFiles}>
+            <Icon icon="material-symbols:delete-sweep-outline" class="mr-2 h-5 w-5" />
+            Delete All
+          </Button>
+        {/if}
+      </div>
+
+      {#if isLoadingExisting}
+        <div class="flex items-center justify-center rounded-lg bg-gray-800 p-8">
+          <div class="h-6 w-6 animate-spin rounded-full border-2 border-blue-400 border-t-transparent"></div>
+          <span class="ml-3 text-gray-400">Loading existing files...</span>
+        </div>
+      {:else if existingFiles.length === 0}
+        <div class="rounded-lg border border-dashed border-gray-700 bg-gray-800/50 p-8 text-center">
+          <Icon icon="material-symbols:folder-open-outline" class="mx-auto h-12 w-12 text-gray-600" />
+          <p class="mt-3 text-gray-400">No data files uploaded yet</p>
+          <p class="text-sm text-gray-500">Upload MoTeC CSV files above to get started</p>
+        </div>
+      {:else}
+        <div class="space-y-2">
+          {#each existingFiles as file (file.name)}
+            <ExistingFileItem
+              {file}
+              ondelete={() => deleteExistingFile(file.name)}
+              isDeleting={deletingFiles.has(file.name)}
+            />
+          {/each}
+        </div>
+      {/if}
+    </section>
+
+    <!-- Newly Uploaded Files List -->
     {#if files.length > 0}
       <section class="mb-8">
-        <h2 class="mb-4 text-xl font-semibold">Uploaded Files</h2>
+        <h2 class="mb-4 text-xl font-semibold">New Files to Upload</h2>
         <div class="space-y-2">
           {#each files as file, i (file.name)}
             <FileListItem name={file.name} metadata={file.metadata} error={file.error} onremove={() => removeFile(i)} />
@@ -248,6 +350,26 @@
             </Button>
           </div>
         </form>
+      </section>
+    {/if}
+
+    <!-- Run Optimization with existing files only -->
+    {#if canRunOptimization}
+      <section class="border-t border-gray-700 pt-8">
+        <div class="rounded-lg bg-gray-800 p-6">
+          <div class="flex items-center justify-between">
+            <div>
+              <h3 class="font-semibold">Ready to Optimize</h3>
+              <p class="text-sm text-gray-400">
+                Run optimization using {existingFiles.length} existing data file{existingFiles.length !== 1 ? 's' : ''}
+              </p>
+            </div>
+            <Button variant="success" onclick={() => goto('/run')}>
+              <Icon icon="material-symbols:play-arrow" class="mr-2 h-5 w-5" />
+              Run Optimization
+            </Button>
+          </div>
+        </div>
       </section>
     {/if}
   </div>

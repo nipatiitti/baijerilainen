@@ -72,8 +72,8 @@
             </div>
             <div class="flex items-center gap-6">
               <div class="text-right">
-                <p class="text-sm text-gray-400">Best BSFC</p>
-                <p class="font-medium text-green-400">{result.best_bsfc.toFixed(1)}</p>
+                <p class="text-sm text-gray-400">Total BSFC</p>
+                <p class="font-medium text-green-400">{result.total_bsfc.toFixed(1)}</p>
               </div>
               <Icon
                 icon="material-symbols:chevron-right"

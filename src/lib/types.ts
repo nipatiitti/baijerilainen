@@ -42,6 +42,8 @@ export interface OptimizationResults {
   }>;
   current_best: {
     overall_bsfc: number;
+    total_observed_bsfc: number;
+    total_predicted_bsfc: number;
     per_rpm: Record<string, number>;
   };
 }
@@ -50,6 +52,6 @@ export interface ResultFileSummary {
   filename: string;
   timestamp: string;
   n_bins: number;
-  best_bsfc: number;
+  total_bsfc: number;
   rpm_range: [number, number];
 }

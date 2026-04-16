@@ -1,19 +1,19 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { resolve } from '$app/paths';
+  import Icon from '@iconify/svelte';
   import {
+    CategoryScale,
     Chart,
+    Filler,
+    Legend,
+    LinearScale,
     LineController,
     LineElement,
     PointElement,
-    LinearScale,
-    CategoryScale,
     Title,
-    Tooltip,
-    Legend,
-    Filler
+    Tooltip
   } from 'chart.js';
-  import Icon from '@iconify/svelte';
+  import { onMount } from 'svelte';
   import type { PageProps } from './$types';
 
   // Register Chart.js components
@@ -389,9 +389,12 @@
             </p>
           </div>
           <div class="print-card rounded-lg bg-gray-800/45 p-4 shadow-sm ring-1 ring-white/10">
-            <p class="print-text-muted text-xs font-medium tracking-wide text-gray-400 uppercase">Best BSFC</p>
+            <p class="print-text-muted text-xs font-medium tracking-wide text-gray-400 uppercase">Total BSFC</p>
             <p class="print-text-dark mt-1 text-lg font-semibold text-green-300 tabular-nums">
-              {results.current_best.overall_bsfc.toFixed(1)}
+              {(
+                results.current_best.total_observed_bsfc ??
+                Object.values(results.current_best.per_rpm).reduce((a, b) => a + b, 0)
+              ).toFixed(1)}
             </p>
           </div>
           <div class="print-card rounded-lg bg-gray-800/45 p-4 shadow-sm ring-1 ring-white/10">

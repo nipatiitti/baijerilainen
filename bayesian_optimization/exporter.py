@@ -7,6 +7,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Tuple
+import numpy as np
 
 from .optimizer import OptimizationResult
 from .rpm_binning import BinnedData, aggregate_binned_data
@@ -16,31 +17,37 @@ from .gp_model import BSFCGaussianProcess
 def export_results(
     result: OptimizationResult,
     binned_data: BinnedData,
-    gp_model: BSFCGaussianProcess,
     output_dir: Path,
     include_visualization_data: bool = True,
 ) -> Path:
     """
     Export optimization results to a new timestamped JSON file.
-    
+
     Args:
         result: Optimization results
         binned_data: Binned training data
-        gp_model: Fitted GP model
         output_dir: Directory to save results
         include_visualization_data: Whether to include GP grid predictions
-        
+
     Returns:
         Path to the created results file
     """
     # Create output directory if needed
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Generate timestamp for unique filename
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     filename = f"optimization_results_{timestamp}.json"
     filepath = output_dir / filename
-    
+
+    # Calculate total BSFC (sum of best observed BSFC per bin - area under curve approximation)
+    total_observed_bsfc = sum(result.best_bsfc_per_rpm.values())
+
+    # Calculate total predicted BSFC from optimal map
+    total_predicted_bsfc = sum(
+        data["predicted_bsfc"] for data in result.optimal_map.values()
+    )
+
     # Build output structure
     output = {
         "metadata": {
@@ -53,22 +60,24 @@ def export_results(
         "suggested_experiments": result.suggested_experiments,
         "current_best": {
             "overall_bsfc": result.best_bsfc_overall,
+            "total_observed_bsfc": total_observed_bsfc,
+            "total_predicted_bsfc": total_predicted_bsfc,
             "per_rpm": {str(int(k)): v for k, v in result.best_bsfc_per_rpm.items()},
         },
     }
-    
+
     # Add visualization data if requested
     if include_visualization_data:
         output["visualization"] = _generate_visualization_data(
-            gp_model, binned_data, result
+            result.gp_models, binned_data, result
         )
-    
+
     # Write to file
     with open(filepath, "w") as f:
         json.dump(output, f, indent=2)
-    
+
     print(f"\nResults saved to: {filepath}")
-    
+
     return filepath
 
 
@@ -78,7 +87,7 @@ def _format_optimal_map(optimal_map: dict) -> dict:
     Creates 1D tables with RPM as the axis.
     """
     rpms = sorted(optimal_map.keys())
-    
+
     return {
         "format": "1D_map",
         "axis": {
@@ -107,41 +116,60 @@ def _format_optimal_map(optimal_map: dict) -> dict:
 
 
 def _generate_visualization_data(
-    gp_model: BSFCGaussianProcess,
+    gp_models: dict,
     binned_data: BinnedData,
     result: OptimizationResult,
 ) -> dict:
     """
     Generate data for frontend visualization.
+    Uses per-bin GP models for surface generation.
     """
-    bounds = gp_model.get_training_bounds()
-    
-    # Generate surface plots for a few representative RPMs
-    rpm_values = binned_data.rpm_centers
-    
-    # Select 3-5 RPMs spread across the range
-    n_plots = min(5, len(rpm_values))
-    indices = [int(i * (len(rpm_values) - 1) / (n_plots - 1)) for i in range(n_plots)]
-    selected_rpms = [rpm_values[i] for i in indices]
-    
+    bounds = result.training_bounds
+
+    # Generate surface plots for each RPM bin using its own GP model
     surfaces = []
+
+    # Select a subset of RPMs if there are too many
+    rpm_values = list(gp_models.keys())
+    n_plots = min(5, len(rpm_values))
+    if len(rpm_values) > n_plots:
+        indices = [int(i * (len(rpm_values) - 1) / (n_plots - 1))
+                   for i in range(n_plots)]
+        selected_rpms = [rpm_values[i] for i in indices]
+    else:
+        selected_rpms = rpm_values
+
     for rpm in selected_rpms:
-        grid_data = gp_model.predict_grid(
-            lambda_range=bounds["lambda"],
-            timing_range=bounds["timing"],
-            rpm=rpm,
+        gp = gp_models[rpm]
+        gp_bounds = gp.get_training_bounds()
+
+        grid_data = gp.predict_grid(
+            lambda_range=gp_bounds["lambda"],
+            timing_range=gp_bounds["timing"],
             n_points=30,  # Lower resolution for smaller file size
         )
+        grid_data["rpm"] = rpm
         surfaces.append(grid_data)
-    
+
     # Training data points for scatter overlay
+    all_lambda = []
+    all_timing = []
+    all_rpm = []
+    all_bsfc = []
+
+    for rpm_bin in binned_data.bins:
+        all_lambda.extend(rpm_bin.lambda_values.tolist())
+        all_timing.extend(rpm_bin.timing_values.tolist())
+        all_rpm.extend([rpm_bin.rpm_center] * len(rpm_bin.lambda_values))
+        all_bsfc.extend(rpm_bin.bsfc_values.tolist())
+
     training_points = {
-        "lambda": binned_data.X[:, 0].tolist(),
-        "timing": binned_data.X[:, 1].tolist(),
-        "rpm": binned_data.X[:, 2].tolist(),
-        "bsfc": binned_data.y.tolist(),
+        "lambda": all_lambda,
+        "timing": all_timing,
+        "rpm": all_rpm,
+        "bsfc": all_bsfc,
     }
-    
+
     return {
         "surfaces": surfaces,
         "training_data": training_points,
@@ -155,35 +183,35 @@ def export_ecu_map_csv(
 ) -> Tuple[Path, Path]:
     """
     Export optimal maps as simple CSV files for ECU calibration tools.
-    
+
     Args:
         result: Optimization results
         output_dir: Directory to save results
-        
+
     Returns:
         Tuple of (lambda_map_path, timing_map_path)
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    
+
     rpms = sorted(result.optimal_map.keys())
-    
+
     # Lambda map
     lambda_path = output_dir / f"lambda_map_{timestamp}.csv"
     with open(lambda_path, "w") as f:
         f.write("RPM,Fuel Mixture Aim (LA)\n")
         for rpm in rpms:
             f.write(f"{int(rpm)},{result.optimal_map[rpm]['lambda']}\n")
-    
+
     # Timing map
     timing_path = output_dir / f"timing_map_{timestamp}.csv"
     with open(timing_path, "w") as f:
         f.write("RPM,Ignition Timing Main (dBTDC)\n")
         for rpm in rpms:
             f.write(f"{int(rpm)},{result.optimal_map[rpm]['timing']}\n")
-    
+
     print(f"ECU maps saved to:")
     print(f"  Lambda: {lambda_path}")
     print(f"  Timing: {timing_path}")
-    
+
     return lambda_path, timing_path

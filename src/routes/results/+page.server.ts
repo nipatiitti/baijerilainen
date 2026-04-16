@@ -2,11 +2,10 @@
  * Server load function to fetch all optimization result files
  */
 
+import { RESULTS_FOLDER, type OptimizationResults, type ResultFileSummary } from '$lib/types';
 import { readdir, readFile } from 'fs/promises';
 import { join } from 'path';
 import type { PageServerLoad } from './$types';
-import { RESULTS_FOLDER, type OptimizationResults, type ResultFileSummary } from '$lib/types';
-
 
 export const load: PageServerLoad = async () => {
   try {
@@ -30,7 +29,9 @@ export const load: PageServerLoad = async () => {
           filename,
           timestamp: data.metadata.timestamp,
           n_bins: data.data_summary.n_bins,
-          best_bsfc: data.current_best.overall_bsfc,
+          total_bsfc:
+            data.current_best.total_observed_bsfc ??
+            Object.values(data.current_best.per_rpm).reduce((a, b) => a + b, 0),
           rpm_range: data.data_summary.rpm_range
         };
       })
